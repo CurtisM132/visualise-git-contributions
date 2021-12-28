@@ -14,9 +14,6 @@ import (
 	"CurtisM132/main/utils"
 )
 
-const gitRepoPathsFile = "repos.txt"
-const commitCutOffDays = 180
-
 const (
 	ansiBlack      string = "\033[0;37;30m"
 	ansiLightGreen string = "\033[1;30;47m"
@@ -24,17 +21,18 @@ const (
 	ansiDarkGreen  string = "\033[1;30;42m"
 )
 
-type Repos struct {
+type GitCommitVisualiser struct {
 	logger *zap.SugaredLogger
 }
 
-func NewGitRepos(logger *zap.SugaredLogger) *Repos {
-	return &Repos{
+func NewGitCommitVisualiser(logger *zap.SugaredLogger) *GitCommitVisualiser {
+	return &GitCommitVisualiser{
 		logger: logger,
 	}
 }
 
-func (r *Repos) AddAllReposInFolder(folder string) error {
+// Scan the supplied folder recursively and add all applicable GIT repos to a persistently stored file
+func (r *GitCommitVisualiser) AddAllReposInFolder(folder string) error {
 	var gitRepos []string
 	r.findGitReposInPath(folder, &gitRepos)
 
@@ -48,18 +46,13 @@ func (r *Repos) AddAllReposInFolder(folder string) error {
 	return nil
 }
 
-func (r *Repos) VisualiseGitCommits(authorEmail string) error {
-	c, err := r.getGitCommits(authorEmail)
-	if err != nil {
-		return fmt.Errorf("failed to get GIT contributions: %s", err)
-	}
-
-	r.printGitCommits(c)
+func (r *GitCommitVisualiser) VisualiseGitCommits(gitCommitMap *map[string]int) error {
+	r.printGitCommits(gitCommitMap)
 
 	return nil
 }
 
-func (r *Repos) findGitReposInPath(path string, repos *[]string) {
+func (r *GitCommitVisualiser) findGitReposInPath(path string, repos *[]string) {
 	files, err := ioutil.ReadDir(path)
 	if err != nil {
 		// Swallow error
@@ -80,46 +73,28 @@ func (r *Repos) findGitReposInPath(path string, repos *[]string) {
 	}
 }
 
-func (r *Repos) getGitCommits(authorEmail string) (map[string]int, error) {
-	repoList, err := r.getRepoListFromFS()
-	if err != nil {
-		return nil, fmt.Errorf("failed to read repo list from file: %s", err)
-	}
+func (r *GitCommitVisualiser) addGitCommitsToMap(cIter object.CommitIter, authorEmail string, gitCommitMap *map[string]int) {
+	_ = cIter.ForEach(func(c *object.Commit) error {
+		// Add commit if no email is supplied or if an email is supplied and it matches the commit author
+		if authorEmail == "" || (authorEmail != "" && c.Author.Email == authorEmail) {
+			commitDate := c.Author.When.Format(DateFormat)
 
-	gitCommitMap := r.createGitCommitMap()
-
-	for _, repoPath := range repoList {
-		r.logger.Infof("Getting GIT commits for %s", repoPath)
-
-		cIter, err := r.getCommitHistory(repoPath)
-		if err != nil {
-			r.logger.Error(err)
-			continue
+			(*gitCommitMap)[commitDate] = (*gitCommitMap)[commitDate] + 1
 		}
 
-		_ = cIter.ForEach(func(c *object.Commit) error {
-			// Add commit if no email is supplied or if an email is supplied and it matches the commit author
-			if authorEmail == "" || (authorEmail != "" && c.Author.Email == authorEmail) {
-				commitDate := c.Author.When.Format("02/01/2006")
-
-				gitCommitMap[commitDate] = gitCommitMap[commitDate] + 1
-			}
-
-			return nil
-		})
-	}
-
-	return gitCommitMap, nil
+		return nil
+	})
 }
 
-func (r *Repos) createGitCommitMap() map[string]int {
+// Create and populate a map to hold the amount of GIT commits against a specific date
+func (r *GitCommitVisualiser) createGitCommitMap() map[string]int {
 	// [time: number of commits]
 	gitCommitMap := make(map[string]int, commitCutOffDays)
 
 	// Zero initialise the map for the past X day
 	cutOffDate := time.Now().Add(-(commitCutOffDays * (24 * time.Hour)))
 	for i := 1; i < commitCutOffDays; i++ {
-		gitCommitMap[cutOffDate.Format("02/01/2006")] = 0
+		gitCommitMap[cutOffDate.Format(DateFormat)] = 0
 
 		cutOffDate = cutOffDate.Add(24 * time.Hour)
 	}
@@ -127,7 +102,10 @@ func (r *Repos) createGitCommitMap() map[string]int {
 	return gitCommitMap
 }
 
-func (r *Repos) getCommitHistory(path string) (object.CommitIter, error) {
+// Get GIT commit history for a specific GIT repo (using go-git)
+func (r *GitCommitVisualiser) getCommitHistory(path string) (object.CommitIter, error) {
+	r.logger.Infof("Getting GIT commit history for %s", path)
+
 	// Open GIT repo using .git folder path
 	gitRepo, err := git.PlainOpen(path)
 	if err != nil {
@@ -149,11 +127,12 @@ func (r *Repos) getCommitHistory(path string) (object.CommitIter, error) {
 	return cIter, nil
 }
 
-func (r *Repos) printGitCommits(commits map[string]int) {
+// Pretty print the GIT commits in a tabula colour-coded format
+func (r *GitCommitVisualiser) printGitCommits(gitCommitMap *map[string]int) {
 	rollingDate := time.Now().Add(-(commitCutOffDays * (24 * time.Hour)))
 
 	for i := 1; i <= commitCutOffDays; i++ {
-		commitNum := commits[rollingDate.Format("02/01/2006")]
+		commitNum := (*gitCommitMap)[rollingDate.Format(DateFormat)]
 
 		colourCode := ansiBlack
 		switch {
@@ -170,7 +149,7 @@ func (r *Repos) printGitCommits(commits map[string]int) {
 			output = fmt.Sprintf("%s %s %s", colourCode, "-", "\033[0m")
 		}
 
-		// Start new line when a line reaches 30 days
+		// Start new line every 30 days
 		if i%30 == 0 {
 			fmt.Println(output)
 		} else {
@@ -181,7 +160,8 @@ func (r *Repos) printGitCommits(commits map[string]int) {
 	}
 }
 
-func (r *Repos) getRepoListFromFS() ([]string, error) {
+// Get the persisted previously discovered GIT repos
+func (r *GitCommitVisualiser) getRepoListFromFS() ([]string, error) {
 	f, err := os.Open(gitRepoPathsFile)
 	if err != nil {
 		return nil, err
@@ -199,7 +179,8 @@ func (r *Repos) getRepoListFromFS() ([]string, error) {
 	return s[:len(s)-1], nil
 }
 
-func (r *Repos) storeRepoListInFS(repoList []string) error {
+// Store a list of GIT repos in the file system
+func (r *GitCommitVisualiser) storeRepoListInFS(repoList []string) error {
 	// Get the existing list of GIT repos (if the file actually exists)
 	existingRepoList, _ := r.getRepoListFromFS()
 

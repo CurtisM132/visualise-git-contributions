@@ -11,14 +11,15 @@ import (
 func main() {
 	logger := initLogger()
 
-	repos := git.NewGitRepos(logger)
+	commitManager := git.NewGitCommitManager(logger)
+	commitVisualiser := git.NewGitCommitVisualiser(logger)
 
 	gitFolder := flag.String("add", "", "Add a folder to be scanned")
 	email := flag.String("email", "", "Email used in GIT commits")
 	flag.Parse()
 
 	if *gitFolder != "" {
-		err := repos.AddAllReposInFolder(*gitFolder)
+		err := commitManager.AddAllReposInFolder(*gitFolder)
 		if err != nil {
 			logger.Error(err)
 		}
@@ -26,7 +27,12 @@ func main() {
 		return
 	}
 
-	err := repos.VisualiseGitCommits(*email)
+	err := commitManager.PopulateCommitMap(*email)
+	if err != nil {
+		logger.Error(err)
+	}
+
+	err = commitVisualiser.VisualiseGitCommits(commitManager.GetCommitMap())
 	if err != nil {
 		logger.Error(err)
 	}
