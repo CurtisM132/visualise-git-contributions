@@ -14,7 +14,7 @@ import (
 	"CurtisM132/main/utils"
 )
 
-const gitFolderPathsFile = "folders.txt"
+const gitRepoPathsFile = "repos.txt"
 const commitCutOffDays = 180
 
 const (
@@ -38,10 +38,23 @@ func (r *Repos) AddAllReposInFolder(folder string) error {
 	var gitRepos []string
 	r.findGitReposInPath(folder, &gitRepos)
 
-	err := r.storeRepoList(gitRepos)
-	if err != nil {
-		r.logger.Errorf("failed to store GIT repos to file system: %s", err)
+	if len(gitRepos) > 0 {
+		err := r.storeRepoListInFS(gitRepos)
+		if err != nil {
+			return fmt.Errorf("failed to store GIT repos to file system: %s", err)
+		}
 	}
+
+	return nil
+}
+
+func (r *Repos) VisualiseGitCommits(authorEmail string) error {
+	c, err := r.getGitCommits(authorEmail)
+	if err != nil {
+		return fmt.Errorf("failed to get GIT contributions: %s", err)
+	}
+
+	r.printGitCommits(c)
 
 	return nil
 }
@@ -49,6 +62,7 @@ func (r *Repos) AddAllReposInFolder(folder string) error {
 func (r *Repos) findGitReposInPath(path string, repos *[]string) {
 	files, err := ioutil.ReadDir(path)
 	if err != nil {
+		// Swallow error
 		return
 	}
 
@@ -57,71 +71,22 @@ func (r *Repos) findGitReposInPath(path string, repos *[]string) {
 
 		if filename == ".git" {
 			r.logger.Infof("Found GIT Repo: %s", path)
-			*repos = append(*repos, path)
 
+			*repos = append(*repos, path)
 		} else if f.IsDir() && filename != "node_modules" {
+			// Search next folder
 			r.findGitReposInPath(fmt.Sprintf("%s\\%s", path, filename), repos)
 		}
 	}
 }
 
-func (r *Repos) VisualiseGitCommits(authorEmail string) error {
-	c, err := r.getGitCommits(authorEmail)
-	if err != nil {
-		r.logger.Errorf("failed to get GIT contributions: %s", err)
-	}
-
-	r.printGitCommits(c)
-
-	return nil
-}
-
-func (r *Repos) printGitCommits(commits map[string]int) {
-	rollingDate := time.Now().Add(-(commitCutOffDays * (24 * time.Hour)))
-
-	for i := 1; i <= commitCutOffDays; i++ {
-		commitNum := commits[rollingDate.Format("02/01/2006")]
-
-		colourCode := ansiBlack
-		switch {
-		case commitNum >= 10:
-			colourCode = ansiDarkGreen
-		case commitNum >= 5:
-			colourCode = ansiGreen
-		case commitNum > 0:
-			colourCode = ansiLightGreen
-		}
-
-		output := fmt.Sprintf("%s %d %s", colourCode, commitNum, "\033[0m")
-		if commitNum == 0 {
-			output = fmt.Sprintf("%s %s %s", colourCode, "-", "\033[0m")
-		}
-
-		if i%30 == 0 {
-			fmt.Println(output)
-		} else {
-			fmt.Print(output)
-		}
-
-		rollingDate = rollingDate.Add(24 * time.Hour)
-	}
-}
-
 func (r *Repos) getGitCommits(authorEmail string) (map[string]int, error) {
-	repoList, err := r.readRepoList()
+	repoList, err := r.getRepoListFromFS()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read repo list from file: %s", err)
 	}
 
-	today := time.Now()
-	cutOffDate := today.Add(-(commitCutOffDays * (24 * time.Hour)))
-
-	numCommitsPerDay := make(map[string]int, commitCutOffDays) // [time: number of commits]
-	for i := 1; i < commitCutOffDays; i++ {
-		numCommitsPerDay[cutOffDate.Format("02/01/2006")] = 0
-
-		cutOffDate = cutOffDate.Add(24 * time.Hour)
-	}
+	gitCommitMap := r.createGitCommitMap()
 
 	for _, repoPath := range repoList {
 		r.logger.Infof("Getting GIT commits for %s", repoPath)
@@ -133,18 +98,33 @@ func (r *Repos) getGitCommits(authorEmail string) (map[string]int, error) {
 		}
 
 		_ = cIter.ForEach(func(c *object.Commit) error {
+			// Add commit if no email is supplied or if an email is supplied and it matches the commit author
 			if authorEmail == "" || (authorEmail != "" && c.Author.Email == authorEmail) {
 				commitDate := c.Author.When.Format("02/01/2006")
 
-				numCommitsPerDay[commitDate] = numCommitsPerDay[commitDate] + 1
+				gitCommitMap[commitDate] = gitCommitMap[commitDate] + 1
 			}
 
 			return nil
 		})
-
 	}
 
-	return numCommitsPerDay, nil
+	return gitCommitMap, nil
+}
+
+func (r *Repos) createGitCommitMap() map[string]int {
+	// [time: number of commits]
+	gitCommitMap := make(map[string]int, commitCutOffDays)
+
+	// Zero initialise the map for the past X day
+	cutOffDate := time.Now().Add(-(commitCutOffDays * (24 * time.Hour)))
+	for i := 1; i < commitCutOffDays; i++ {
+		gitCommitMap[cutOffDate.Format("02/01/2006")] = 0
+
+		cutOffDate = cutOffDate.Add(24 * time.Hour)
+	}
+
+	return gitCommitMap
 }
 
 func (r *Repos) getCommitHistory(path string) (object.CommitIter, error) {
@@ -169,8 +149,40 @@ func (r *Repos) getCommitHistory(path string) (object.CommitIter, error) {
 	return cIter, nil
 }
 
-func (r *Repos) readRepoList() ([]string, error) {
-	f, err := os.Open(gitFolderPathsFile)
+func (r *Repos) printGitCommits(commits map[string]int) {
+	rollingDate := time.Now().Add(-(commitCutOffDays * (24 * time.Hour)))
+
+	for i := 1; i <= commitCutOffDays; i++ {
+		commitNum := commits[rollingDate.Format("02/01/2006")]
+
+		colourCode := ansiBlack
+		switch {
+		case commitNum >= 10:
+			colourCode = ansiDarkGreen
+		case commitNum >= 5:
+			colourCode = ansiGreen
+		case commitNum > 0:
+			colourCode = ansiLightGreen
+		}
+
+		output := fmt.Sprintf("%s %d %s", colourCode, commitNum, "\033[0m")
+		if commitNum == 0 {
+			output = fmt.Sprintf("%s %s %s", colourCode, "-", "\033[0m")
+		}
+
+		// Start new line when a line reaches 30 days
+		if i%30 == 0 {
+			fmt.Println(output)
+		} else {
+			fmt.Print(output)
+		}
+
+		rollingDate = rollingDate.Add(24 * time.Hour)
+	}
+}
+
+func (r *Repos) getRepoListFromFS() ([]string, error) {
+	f, err := os.Open(gitRepoPathsFile)
 	if err != nil {
 		return nil, err
 	}
@@ -184,15 +196,14 @@ func (r *Repos) readRepoList() ([]string, error) {
 	splitter := regexp.MustCompile(`\n`)
 	s := splitter.Split(string(buffer[:]), -1)
 
-	// File terminates with a new line so ignore the last element
 	return s[:len(s)-1], nil
 }
 
-func (r *Repos) storeRepoList(repoList []string) error {
-	var existingRepoList []string
-	existingRepoList, _ = r.readRepoList()
+func (r *Repos) storeRepoListInFS(repoList []string) error {
+	// Get the existing list of GIT repos (if the file actually exists)
+	existingRepoList, _ := r.getRepoListFromFS()
 
-	f, err := os.OpenFile(gitFolderPathsFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(gitRepoPathsFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return err
 	}

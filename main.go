@@ -26,13 +26,10 @@ func main() {
 		return
 	}
 
-	repos.VisualiseGitCommits(*email)
-
-	// _, err := readFromDefaultFile()
-	// if err != nil {
-	// 	fmt.Print("failed to read contents of default file: " + err.Error())
-	// 	return
-	// }
+	err := repos.VisualiseGitCommits(*email)
+	if err != nil {
+		logger.Error(err)
+	}
 }
 
 func initLogger() *zap.SugaredLogger {
