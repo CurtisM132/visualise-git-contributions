@@ -6,52 +6,54 @@ import (
 	"os"
 	"regexp"
 
+	"go.uber.org/zap"
 	"gopkg.in/src-d/go-git.v4"
 	"gopkg.in/src-d/go-git.v4/plumbing/object"
+
+	"CurtisM132/main/utils"
 )
 
-type Repos struct{}
+type Repos struct {
+	logger *zap.SugaredLogger
+}
 
 const gitFolderPathsFile = "folders.txt"
 
-func (r *Repos) AddAllReposInFolder(folder string) error {
-	r.getGitReposInFolder(folder)
+func NewGitRepos(logger *zap.SugaredLogger) *Repos {
+	return &Repos{
+		logger: logger,
+	}
+}
 
-	err := r.writeToDefaultFile(folder)
+func (r *Repos) AddAllReposInFolder(folder string) error {
+	var gitRepos []string
+	r.findGitReposInPath(folder, &gitRepos)
+
+	err := r.storeRepoList(gitRepos)
 	if err != nil {
-		fmt.Printf("failed to write %s to default file: %s", folder, err.Error())
+		r.logger.Errorf("failed to store GIT repos to file system: %s", err)
 	}
 
 	return nil
 }
 
-func (r *Repos) getGitReposInFolder(folder string) ([]string, error) {
-	var repos []string
-
-	repos = r.g(folder, repos)
-
-	return repos, nil
-}
-
-func (r *Repos) g(path string, repos []string) []string {
+func (r *Repos) findGitReposInPath(path string, repos *[]string) {
 	files, err := ioutil.ReadDir(path)
 	if err != nil {
-		return repos
+		return
 	}
 
 	for _, f := range files {
 		filename := f.Name()
 
-		if filename == "git" {
-			repos = append(repos, path)
+		if filename == ".git" {
+			r.logger.Infof("Found GIT Repo: %s", path)
+			*repos = append(*repos, path)
 
 		} else if f.IsDir() && filename != "node_modules" {
-			path = fmt.Sprintf("%s/%s", path, filename)
-			repos = r.g(path, repos)
+			r.findGitReposInPath(fmt.Sprintf("%s\\%s", path, filename), repos)
 		}
 	}
-
-	return repos
 }
 
 func (r *Repos) VisualiseGitContributions() error {
@@ -61,30 +63,35 @@ func (r *Repos) VisualiseGitContributions() error {
 }
 
 func (r *Repos) getGitContributions() (map[string]int, error) {
-	repoList, err := r.readFromDefaultFile()
+	repoList, err := r.readRepoList()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read repo list from file: %s", err)
 	}
 
 	numCommitsPerDay := make(map[string]int) // [time: number of commits]
 
-	for _, repo := range repoList {
+	for _, repoPath := range repoList {
+		r.logger.Infof("Getting GIT commits for %s", repoPath)
+
 		// Open GIT repo using .git folder path
-		r, err := git.PlainOpen(repo)
+		gitRepo, err := git.PlainOpen(repoPath)
 		if err != nil {
-			return nil, fmt.Errorf("failed to open GIT repo (%s): %s", repo, err)
+			r.logger.Errorf("failed to open GIT repo (%s): %s", repoPath, err)
+			continue
 		}
 
 		// HEAD reference
-		ref, err := r.Head()
+		ref, err := gitRepo.Head()
 		if err != nil {
-			return nil, fmt.Errorf("failed to get GIT repo (%s) HEAD: %s", repo, err)
+			r.logger.Errorf("failed to get GIT repo (%s) HEAD: %s", repoPath, err)
+			continue
 		}
 
 		// Commit history
-		cIter, err := r.Log(&git.LogOptions{From: ref.Hash()})
+		cIter, err := gitRepo.Log(&git.LogOptions{From: ref.Hash()})
 		if err != nil {
-			return nil, fmt.Errorf("failed to get GIT repo (%s) commit history: %s", repo, err)
+			r.logger.Errorf("failed to get GIT repo (%s) commit history: %s", repoPath, err)
+			continue
 		}
 
 		_ = cIter.ForEach(func(c *object.Commit) error {
@@ -103,33 +110,41 @@ func (r *Repos) getGitContributions() (map[string]int, error) {
 	return numCommitsPerDay, nil
 }
 
-func (r *Repos) readFromDefaultFile() ([]string, error) {
+func (r *Repos) readRepoList() ([]string, error) {
 	f, err := os.Open(gitFolderPathsFile)
 	if err != nil {
 		return nil, err
 	}
-
 	defer f.Close()
 
-	// Read the file into a buffer
+	// Read file
 	var buffer [4096]byte
 	f.Read(buffer[:])
 
-	// Split the file contents with each line being a new string
+	// Split file contents by carriage returns
 	splitter := regexp.MustCompile(`\n`)
 	s := splitter.Split(string(buffer[:]), -1)
 
-	return s, nil
+	// File terminates with a new line so ignore the last element
+	return s[:len(s)-1], nil
 }
 
-func (r *Repos) writeToDefaultFile(s string) error {
+func (r *Repos) storeRepoList(repoList []string) error {
+	var existingRepoList []string
+	existingRepoList, _ = r.readRepoList()
+
 	f, err := os.OpenFile(gitFolderPathsFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	f.WriteString(s + "\n")
+	for _, s := range repoList {
+		if !utils.Contains(existingRepoList, s) {
+			f.WriteString(s + "\n")
+		}
+	}
+
 	f.Sync()
 
 	return nil

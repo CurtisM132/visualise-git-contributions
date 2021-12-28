@@ -2,13 +2,16 @@ package main
 
 import (
 	"flag"
-	"fmt"
 
 	"CurtisM132/main/git"
+
+	"go.uber.org/zap"
 )
 
 func main() {
-	repos := git.Repos{}
+	logger := initLogger()
+
+	repos := git.NewGitRepos(logger)
 
 	var gitFolder string
 	flag.StringVar(&gitFolder, "add", "", "Add a folder to be scanned")
@@ -17,7 +20,7 @@ func main() {
 	if gitFolder != "" {
 		err := repos.AddAllReposInFolder(gitFolder)
 		if err != nil {
-			fmt.Print(err)
+			logger.Error(err)
 		}
 
 		return
@@ -30,4 +33,10 @@ func main() {
 	// 	fmt.Print("failed to read contents of default file: " + err.Error())
 	// 	return
 	// }
+}
+
+func initLogger() *zap.SugaredLogger {
+	logger, _ := zap.NewProduction()
+	defer logger.Sync() // flushes buffer, if any
+	return logger.Sugar()
 }
