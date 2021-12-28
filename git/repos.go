@@ -5,6 +5,7 @@ import (
 	"io/ioutil"
 	"os"
 	"regexp"
+	"time"
 
 	"go.uber.org/zap"
 	"gopkg.in/src-d/go-git.v4"
@@ -13,11 +14,19 @@ import (
 	"CurtisM132/main/utils"
 )
 
+const gitFolderPathsFile = "folders.txt"
+const commitCutOffDays = 180
+
+const (
+	ansiBlack      string = "\033[0;37;30m"
+	ansiLightGreen string = "\033[1;30;47m"
+	ansiGreen      string = "\033[1;30;43m"
+	ansiDarkGreen  string = "\033[1;30;42m"
+)
+
 type Repos struct {
 	logger *zap.SugaredLogger
 }
-
-const gitFolderPathsFile = "folders.txt"
 
 func NewGitRepos(logger *zap.SugaredLogger) *Repos {
 	return &Repos{
@@ -56,51 +65,79 @@ func (r *Repos) findGitReposInPath(path string, repos *[]string) {
 	}
 }
 
-func (r *Repos) VisualiseGitContributions() error {
-	r.getGitContributions()
+func (r *Repos) VisualiseGitCommits(authorEmail string) error {
+	c, err := r.getGitCommits(authorEmail)
+	if err != nil {
+		r.logger.Errorf("failed to get GIT contributions: %s", err)
+	}
+
+	r.printGitCommits(c)
 
 	return nil
 }
 
-func (r *Repos) getGitContributions() (map[string]int, error) {
+func (r *Repos) printGitCommits(commits map[string]int) {
+	rollingDate := time.Now().Add(-(commitCutOffDays * (24 * time.Hour)))
+
+	for i := 1; i <= commitCutOffDays; i++ {
+		commitNum := commits[rollingDate.Format("02/01/2006")]
+
+		colourCode := ansiBlack
+		switch {
+		case commitNum >= 10:
+			colourCode = ansiDarkGreen
+		case commitNum >= 5:
+			colourCode = ansiGreen
+		case commitNum > 0:
+			colourCode = ansiLightGreen
+		}
+
+		output := fmt.Sprintf("%s %d %s", colourCode, commitNum, "\033[0m")
+		if commitNum == 0 {
+			output = fmt.Sprintf("%s %s %s", colourCode, "-", "\033[0m")
+		}
+
+		if i%30 == 0 {
+			fmt.Println(output)
+		} else {
+			fmt.Print(output)
+		}
+
+		rollingDate = rollingDate.Add(24 * time.Hour)
+	}
+}
+
+func (r *Repos) getGitCommits(authorEmail string) (map[string]int, error) {
 	repoList, err := r.readRepoList()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read repo list from file: %s", err)
 	}
 
-	numCommitsPerDay := make(map[string]int) // [time: number of commits]
+	today := time.Now()
+	cutOffDate := today.Add(-(commitCutOffDays * (24 * time.Hour)))
+
+	numCommitsPerDay := make(map[string]int, commitCutOffDays) // [time: number of commits]
+	for i := 1; i < commitCutOffDays; i++ {
+		numCommitsPerDay[cutOffDate.Format("02/01/2006")] = 0
+
+		cutOffDate = cutOffDate.Add(24 * time.Hour)
+	}
 
 	for _, repoPath := range repoList {
 		r.logger.Infof("Getting GIT commits for %s", repoPath)
 
-		// Open GIT repo using .git folder path
-		gitRepo, err := git.PlainOpen(repoPath)
+		cIter, err := r.getCommitHistory(repoPath)
 		if err != nil {
-			r.logger.Errorf("failed to open GIT repo (%s): %s", repoPath, err)
-			continue
-		}
-
-		// HEAD reference
-		ref, err := gitRepo.Head()
-		if err != nil {
-			r.logger.Errorf("failed to get GIT repo (%s) HEAD: %s", repoPath, err)
-			continue
-		}
-
-		// Commit history
-		cIter, err := gitRepo.Log(&git.LogOptions{From: ref.Hash()})
-		if err != nil {
-			r.logger.Errorf("failed to get GIT repo (%s) commit history: %s", repoPath, err)
+			r.logger.Error(err)
 			continue
 		}
 
 		_ = cIter.ForEach(func(c *object.Commit) error {
-			// TODO
-			// if c.Author.Name == Me
+			if authorEmail == "" || (authorEmail != "" && c.Author.Email == authorEmail) {
+				commitDate := c.Author.When.Format("02/01/2006")
 
-			commitDate := c.Author.When.Format("01/02/2006")
-
-			numCommitsPerDay[commitDate] = numCommitsPerDay[commitDate] + 1
+				numCommitsPerDay[commitDate] = numCommitsPerDay[commitDate] + 1
+			}
 
 			return nil
 		})
@@ -108,6 +145,28 @@ func (r *Repos) getGitContributions() (map[string]int, error) {
 	}
 
 	return numCommitsPerDay, nil
+}
+
+func (r *Repos) getCommitHistory(path string) (object.CommitIter, error) {
+	// Open GIT repo using .git folder path
+	gitRepo, err := git.PlainOpen(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open GIT repo (%s): %s", path, err)
+	}
+
+	// HEAD reference
+	ref, err := gitRepo.Head()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get GIT repo (%s) HEAD: %s", path, err)
+	}
+
+	// Commit history
+	cIter, err := gitRepo.Log(&git.LogOptions{From: ref.Hash()})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get GIT repo (%s) commit history: %s", path, err)
+	}
+
+	return cIter, nil
 }
 
 func (r *Repos) readRepoList() ([]string, error) {

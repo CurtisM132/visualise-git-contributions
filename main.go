@@ -3,9 +3,9 @@ package main
 import (
 	"flag"
 
-	"CurtisM132/main/git"
-
 	"go.uber.org/zap"
+
+	"CurtisM132/main/git"
 )
 
 func main() {
@@ -13,12 +13,12 @@ func main() {
 
 	repos := git.NewGitRepos(logger)
 
-	var gitFolder string
-	flag.StringVar(&gitFolder, "add", "", "Add a folder to be scanned")
+	gitFolder := flag.String("add", "", "Add a folder to be scanned")
+	email := flag.String("email", "", "Email used in GIT commits")
 	flag.Parse()
 
-	if gitFolder != "" {
-		err := repos.AddAllReposInFolder(gitFolder)
+	if *gitFolder != "" {
+		err := repos.AddAllReposInFolder(*gitFolder)
 		if err != nil {
 			logger.Error(err)
 		}
@@ -26,7 +26,7 @@ func main() {
 		return
 	}
 
-	repos.VisualiseGitContributions()
+	repos.VisualiseGitCommits(*email)
 
 	// _, err := readFromDefaultFile()
 	// if err != nil {
